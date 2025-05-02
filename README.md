@@ -127,8 +127,8 @@ If you use this model in your research, please cite:
   year         = {2024},
   publisher    = {GitHub},
   journal      = {GitHub Repository},
-  howpublished = {\url{https://github.com/cmeraki/indri}},
-  email        = {compute@merakilabs.com}
+  howpublished = {\url{https://github.com/indri-voice/indri}},
+  email        = {apurvagup@gmail.com, romit.73@gmail.com}
 }
 ```
 
