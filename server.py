@@ -176,7 +176,7 @@ async def websocket_stream(websocket: WebSocket):
                     await output_queue.put({
                         'error': f'Invalid speaker: {speaker}',
                         'error_type': 'invalid_speaker',
-                        'available_speakers': list(SPEAKER_MAP.keys())
+                        'available_speakers': [str(s) for s in SPEAKER_MAP.keys()]
                     })
                     continue
                 
@@ -311,7 +311,7 @@ async def websocket_stream(websocket: WebSocket):
                     logger.warning(f"[{request_id}] Invalid speaker requested: {new_speaker}")
                     await websocket.send_json({
                         'error': f'Invalid speaker: {new_speaker}',
-                        'available_speakers': list(SPEAKER_MAP.keys())
+                        'available_speakers': [str(s) for s in SPEAKER_MAP.keys()]
                     })
             
             if 'text' in data:
@@ -370,7 +370,7 @@ async def stream_tts(request: TTSRequest):
                 yield json.dumps({
                     'error': f'Invalid speaker: {request.speaker}',
                     'error_type': 'invalid_speaker',
-                    'available_speakers': list(SPEAKER_MAP.keys())
+                    'available_speakers': [str(s) for s in SPEAKER_MAP.keys()]
                 }) + '\n'
                 return
             
