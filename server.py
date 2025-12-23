@@ -169,17 +169,8 @@ async def websocket_stream(websocket: WebSocket):
                 text_chunk = item
                 logger.info(f"[{request_id}] Generating chunk {chunk_id}: {text_chunk[:50]}...")
                 
-                # Use same lookup as /tts endpoint
+                # Use same lookup as /tts endpoint - no validation, just try it
                 speaker_id = SPEAKER_MAP.get(speaker, {'id': None}).get('id')
-                
-                if speaker_id is None:
-                    logger.error(f"[{request_id}] Invalid speaker: {speaker}")
-                    await output_queue.put({
-                        'error': f'Invalid speaker: {speaker}',
-                        'error_type': 'invalid_speaker',
-                        'available_speakers': [str(s) for s in SPEAKER_MAP.keys()]
-                    })
-                    continue
                 
                 try:
                     results: AudioOutput = await tts_model.generate_async(
@@ -193,6 +184,8 @@ async def websocket_stream(websocket: WebSocket):
                         'error': f'Model generation failed: {str(model_error)}',
                         'error_type': 'model_error',
                         'chunk_text': text_chunk,
+                        'speaker': speaker,
+                        'speaker_id': speaker_id,
                         'traceback': traceback.format_exc()
                     })
                     continue
@@ -355,25 +348,19 @@ async def stream_tts(request: TTSRequest):
     Returns newline-delimited JSON (NDJSON)
     """
     request_id = str(uuid.uuid4())
+    chunk_id = 0  # Move counter to outer scope
     
     async def generate():
+        nonlocal chunk_id  # Make it accessible in nested function
         try:
+            # Use same lookup as /tts endpoint - no validation
             speaker_id = SPEAKER_MAP.get(request.speaker, {'id': None}).get('id')
-            if speaker_id is None:
-                logger.error(f"[{request_id}] Invalid speaker: {request.speaker}")
-                yield json.dumps({
-                    'error': f'Invalid speaker: {request.speaker}',
-                    'error_type': 'invalid_speaker',
-                    'available_speakers': [str(s) for s in SPEAKER_MAP.keys()]
-                }) + '\n'
-                return
             
-            logger.info(f"[{request_id}] Starting HTTP stream, speaker: {request.speaker}")
+            logger.info(f"[{request_id}] Starting HTTP stream, speaker: {request.speaker}, speaker_id: {speaker_id}")
             
             # Split into words
             words = request.text.split()
             buffer = StreamBuffer(min_words=3, max_words=10)
-            chunk_id = 0
             
             for word in words:
                 chunk = buffer.add_word(word)
@@ -395,6 +382,8 @@ async def stream_tts(request: TTSRequest):
                             'error_type': 'model_error',
                             'chunk_text': chunk,
                             'chunk_id': chunk_id,
+                            'speaker': request.speaker,
+                            'speaker_id': speaker_id,
                             'traceback': traceback.format_exc()
                         }) + '\n'
                         continue
@@ -471,6 +460,8 @@ async def stream_tts(request: TTSRequest):
                         'text': remaining,
                         'sample_rate': results.sample_rate
                     }) + '\n'
+                    
+                    chunk_id += 1
                 except Exception as final_error:
                     logger.error(f"[{request_id}] Final chunk error: {final_error}\n{traceback.format_exc()}")
                     yield json.dumps({
