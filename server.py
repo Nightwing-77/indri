@@ -260,7 +260,7 @@ if __name__ == "__main__":
     logger.info(f'Loading model from {args.model_path} on {args.device} and starting server on port {args.port}')
 
     global tts_model
-    tts_model = TTS(model_path=args.model_path, device=args.device,dtype="half")
+    tts_model = TTS(model_path=args.model_path, device=args.device)
 
     file_names = list(Path('sample/').resolve().glob('**/*.wav'))
     logger.info(f'Found {len(file_names)} sample audio files')
