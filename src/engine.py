@@ -26,7 +26,7 @@ class Engine:
             skip_tokenizer_init=True,
             gpu_memory_utilization=gpu_memory_utilization,
             device=device,
-            dtype='bfloat16',
+            dtype='half',
         )
         self._engine = AsyncLLMEngine.from_engine_args(engine_args)
 
@@ -50,7 +50,7 @@ class VLLMEngine:
             skip_tokenizer_init=True,
             gpu_memory_utilization=gpu_memory_utilization,
             device=device,
-            dtype='bfloat16',
+            dtype='half',
         )
         cls._engine = AsyncLLMEngine.from_engine_args(engine_args)
 
