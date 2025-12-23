@@ -149,7 +149,7 @@ async def websocket_stream(websocket: WebSocket):
     await websocket.accept()
     
     request_id = str(uuid.uuid4())
-    speaker = "alice"
+    speaker = "🇮🇳 👨 politician"  # Default speaker
     buffer = StreamBuffer(min_words=3, max_words=10)
     chunk_id = 0
     
@@ -167,28 +167,60 @@ async def websocket_stream(websocket: WebSocket):
                     break
                 
                 text_chunk = item
-                logger.info(f"Generating: {text_chunk[:50]}...")
+                logger.info(f"[{request_id}] Generating chunk {chunk_id}: {text_chunk[:50]}...")
                 
                 speaker_id = SPEAKER_MAP.get(speaker, {'id': None}).get('id')
-                results: AudioOutput = await tts_model.generate_async(
-                    text=text_chunk,
-                    speaker=speaker_id,
-                    request_id=f"{request_id}-{chunk_id}"
-                )
                 
-                audio_tensor = torch.from_numpy(results.audio)
-                buffer_io = io.BytesIO()
-                torchaudio.save(
-                    buffer_io,
-                    audio_tensor,
-                    sample_rate=results.sample_rate,
-                    format='mp3',
-                    encoding='PCM_S',
-                    bits_per_sample=16,
-                    backend='ffmpeg',
-                    compression=CodecConfig(bit_rate=64000)
-                )
-                buffer_io.seek(0)
+                if speaker_id is None:
+                    logger.error(f"[{request_id}] Invalid speaker: {speaker}. Available: {list(SPEAKER_MAP.keys())}")
+                    await output_queue.put({
+                        'error': f'Invalid speaker: {speaker}',
+                        'error_type': 'invalid_speaker',
+                        'available_speakers': list(SPEAKER_MAP.keys())
+                    })
+                    continue
+                
+                try:
+                    results: AudioOutput = await tts_model.generate_async(
+                        text=text_chunk,
+                        speaker=speaker_id,
+                        request_id=f"{request_id}-{chunk_id}"
+                    )
+                except Exception as model_error:
+                    logger.error(f"[{request_id}] Model generation error: {model_error}\n{traceback.format_exc()}")
+                    await output_queue.put({
+                        'error': f'Model generation failed: {str(model_error)}',
+                        'error_type': 'model_error',
+                        'chunk_text': text_chunk,
+                        'traceback': traceback.format_exc()
+                    })
+                    continue
+                
+                try:
+                    audio_tensor = torch.from_numpy(results.audio)
+                    buffer_io = io.BytesIO()
+                    torchaudio.save(
+                        buffer_io,
+                        audio_tensor,
+                        sample_rate=results.sample_rate,
+                        format='mp3',
+                        encoding='PCM_S',
+                        bits_per_sample=16,
+                        backend='ffmpeg',
+                        compression=CodecConfig(bit_rate=64000)
+                    )
+                    buffer_io.seek(0)
+                except Exception as encode_error:
+                    logger.error(f"[{request_id}] Audio encoding error: {encode_error}\n{traceback.format_exc()}")
+                    await output_queue.put({
+                        'error': f'Audio encoding failed: {str(encode_error)}',
+                        'error_type': 'encoding_error',
+                        'chunk_text': text_chunk,
+                        'traceback': traceback.format_exc()
+                    })
+                    continue
+                
+                logger.info(f"[{request_id}] Generated chunk {chunk_id} successfully")
                 
                 await output_queue.put({
                     'id': chunk_id,
@@ -198,7 +230,12 @@ async def websocket_stream(websocket: WebSocket):
                 chunk_id += 1
                 
             except Exception as e:
-                logger.error(f"Generator error: {e}")
+                logger.error(f"[{request_id}] Generator error: {e}\n{traceback.format_exc()}")
+                await output_queue.put({
+                    'error': f'Unexpected error in generator: {str(e)}',
+                    'error_type': 'generator_error',
+                    'traceback': traceback.format_exc()
+                })
     
     async def audio_sender():
         """Background task to send audio as soon as ready"""
@@ -207,6 +244,11 @@ async def websocket_stream(websocket: WebSocket):
                 item = await output_queue.get()
                 if item is None:  # Poison pill
                     break
+                
+                if 'error' in item:
+                    logger.error(f"[{request_id}] Sending error to client: {item}")
+                    await websocket.send_json(item)
+                    continue
                 
                 import base64
                 audio_b64 = base64.b64encode(item['audio']).decode('utf-8')
@@ -217,8 +259,19 @@ async def websocket_stream(websocket: WebSocket):
                     'text': item['text']
                 })
                 
+            except WebSocketDisconnect:
+                logger.info(f"[{request_id}] WebSocket disconnected in sender")
+                break
             except Exception as e:
-                logger.error(f"Sender error: {e}")
+                logger.error(f"[{request_id}] Sender error: {e}\n{traceback.format_exc()}")
+                try:
+                    await websocket.send_json({
+                        'error': f'Sender error: {str(e)}',
+                        'error_type': 'sender_error',
+                        'traceback': traceback.format_exc()
+                    })
+                except:
+                    pass
                 break
     
     # Start background workers
@@ -226,13 +279,17 @@ async def websocket_stream(websocket: WebSocket):
     sender_task = asyncio.create_task(audio_sender())
     
     try:
+        logger.info(f"[{request_id}] WebSocket connected, default speaker: {speaker}")
+        
         while True:
             data = await websocket.receive_json()
             
             if data.get('done'):
+                logger.info(f"[{request_id}] Received done signal, flushing buffer...")
                 # Flush remaining
                 remaining = buffer.flush()
                 if remaining:
+                    logger.info(f"[{request_id}] Flushing remaining text: {remaining}")
                     await processing_queue.put(remaining)
                 
                 # Stop workers
@@ -241,26 +298,55 @@ async def websocket_stream(websocket: WebSocket):
                 await output_queue.put(None)
                 await sender_task
                 
+                logger.info(f"[{request_id}] Streaming complete, {chunk_id} chunks generated")
                 await websocket.send_json({'done': True, 'total': chunk_id})
                 break
             
             if 'speaker' in data:
-                speaker = data['speaker']
+                new_speaker = data['speaker']
+                if new_speaker in SPEAKER_MAP:
+                    speaker = new_speaker
+                    logger.info(f"[{request_id}] Speaker changed to: {speaker}")
+                else:
+                    logger.warning(f"[{request_id}] Invalid speaker requested: {new_speaker}")
+                    await websocket.send_json({
+                        'error': f'Invalid speaker: {new_speaker}',
+                        'available_speakers': list(SPEAKER_MAP.keys())
+                    })
             
             if 'text' in data:
                 word = data['text']
                 chunk = buffer.add_word(word)
                 
                 if chunk:
+                    logger.info(f"[{request_id}] Buffer full, queueing chunk: {chunk[:50]}...")
                     # Queue for processing immediately
                     await processing_queue.put(chunk)
     
     except WebSocketDisconnect:
-        logger.info("WebSocket disconnected")
+        logger.info(f"[{request_id}] WebSocket disconnected")
+    except json.JSONDecodeError as e:
+        logger.error(f"[{request_id}] Invalid JSON received: {e}")
+        try:
+            await websocket.send_json({
+                'error': f'Invalid JSON: {str(e)}',
+                'error_type': 'json_error'
+            })
+        except:
+            pass
     except Exception as e:
-        logger.error(f"WebSocket error: {e}")
+        logger.error(f"[{request_id}] WebSocket error: {e}\n{traceback.format_exc()}")
+        try:
+            await websocket.send_json({
+                'error': str(e),
+                'error_type': 'websocket_error',
+                'traceback': traceback.format_exc()
+            })
+        except:
+            pass
     finally:
         # Cleanup
+        logger.info(f"[{request_id}] Cleaning up WebSocket connection")
         try:
             await processing_queue.put(None)
             await output_queue.put(None)
@@ -280,8 +366,15 @@ async def stream_tts(request: TTSRequest):
         try:
             speaker_id = SPEAKER_MAP.get(request.speaker, {'id': None}).get('id')
             if speaker_id is None:
-                yield json.dumps({'error': 'Invalid speaker'}) + '\n'
+                logger.error(f"[{request_id}] Invalid speaker: {request.speaker}")
+                yield json.dumps({
+                    'error': f'Invalid speaker: {request.speaker}',
+                    'error_type': 'invalid_speaker',
+                    'available_speakers': list(SPEAKER_MAP.keys())
+                }) + '\n'
                 return
+            
+            logger.info(f"[{request_id}] Starting HTTP stream, speaker: {request.speaker}")
             
             # Split into words
             words = request.text.split()
@@ -292,13 +385,73 @@ async def stream_tts(request: TTSRequest):
                 chunk = buffer.add_word(word)
                 
                 if chunk:
-                    logger.info(f"Stream chunk {chunk_id}: {chunk[:50]}...")
+                    logger.info(f"[{request_id}] Stream chunk {chunk_id}: {chunk[:50]}...")
                     
-                    # Generate audio
+                    try:
+                        # Generate audio
+                        results: AudioOutput = await tts_model.generate_async(
+                            text=chunk,
+                            speaker=speaker_id,
+                            request_id=f"{request_id}-{chunk_id}"
+                        )
+                    except Exception as model_error:
+                        logger.error(f"[{request_id}] Model generation error: {model_error}\n{traceback.format_exc()}")
+                        yield json.dumps({
+                            'error': f'Model generation failed: {str(model_error)}',
+                            'error_type': 'model_error',
+                            'chunk_text': chunk,
+                            'chunk_id': chunk_id,
+                            'traceback': traceback.format_exc()
+                        }) + '\n'
+                        continue
+                    
+                    try:
+                        audio_tensor = torch.from_numpy(results.audio)
+                        buffer_io = io.BytesIO()
+                        torchaudio.save(
+                            buffer_io,
+                            audio_tensor,
+                            sample_rate=results.sample_rate,
+                            format='mp3',
+                            encoding='PCM_S',
+                            bits_per_sample=16,
+                            backend='ffmpeg',
+                            compression=CodecConfig(bit_rate=64000)
+                        )
+                        buffer_io.seek(0)
+                    except Exception as encode_error:
+                        logger.error(f"[{request_id}] Audio encoding error: {encode_error}\n{traceback.format_exc()}")
+                        yield json.dumps({
+                            'error': f'Audio encoding failed: {str(encode_error)}',
+                            'error_type': 'encoding_error',
+                            'chunk_text': chunk,
+                            'chunk_id': chunk_id,
+                            'traceback': traceback.format_exc()
+                        }) + '\n'
+                        continue
+                    
+                    import base64
+                    audio_b64 = base64.b64encode(buffer_io.getvalue()).decode('utf-8')
+                    
+                    yield json.dumps({
+                        'id': chunk_id,
+                        'audio': audio_b64,
+                        'text': chunk,
+                        'sample_rate': results.sample_rate
+                    }) + '\n'
+                    
+                    chunk_id += 1
+            
+            # Flush remaining
+            remaining = buffer.flush()
+            if remaining:
+                logger.info(f"[{request_id}] Stream final chunk: {remaining}")
+                
+                try:
                     results: AudioOutput = await tts_model.generate_async(
-                        text=chunk,
+                        text=remaining,
                         speaker=speaker_id,
-                        request_id=f"{request_id}-{chunk_id}"
+                        request_id=f"{request_id}-final"
                     )
                     
                     audio_tensor = torch.from_numpy(results.audio)
@@ -321,52 +474,28 @@ async def stream_tts(request: TTSRequest):
                     yield json.dumps({
                         'id': chunk_id,
                         'audio': audio_b64,
-                        'text': chunk,
+                        'text': remaining,
                         'sample_rate': results.sample_rate
                     }) + '\n'
-                    
-                    chunk_id += 1
+                except Exception as final_error:
+                    logger.error(f"[{request_id}] Final chunk error: {final_error}\n{traceback.format_exc()}")
+                    yield json.dumps({
+                        'error': f'Final chunk failed: {str(final_error)}',
+                        'error_type': 'final_chunk_error',
+                        'chunk_text': remaining,
+                        'traceback': traceback.format_exc()
+                    }) + '\n'
             
-            # Flush remaining
-            remaining = buffer.flush()
-            if remaining:
-                logger.info(f"Stream final chunk: {remaining}")
-                
-                results: AudioOutput = await tts_model.generate_async(
-                    text=remaining,
-                    speaker=speaker_id,
-                    request_id=f"{request_id}-final"
-                )
-                
-                audio_tensor = torch.from_numpy(results.audio)
-                buffer_io = io.BytesIO()
-                torchaudio.save(
-                    buffer_io,
-                    audio_tensor,
-                    sample_rate=results.sample_rate,
-                    format='mp3',
-                    encoding='PCM_S',
-                    bits_per_sample=16,
-                    backend='ffmpeg',
-                    compression=CodecConfig(bit_rate=64000)
-                )
-                buffer_io.seek(0)
-                
-                import base64
-                audio_b64 = base64.b64encode(buffer_io.getvalue()).decode('utf-8')
-                
-                yield json.dumps({
-                    'id': chunk_id,
-                    'audio': audio_b64,
-                    'text': remaining,
-                    'sample_rate': results.sample_rate
-                }) + '\n'
-            
-            yield json.dumps({'done': True}) + '\n'
+            logger.info(f"[{request_id}] HTTP stream complete, {chunk_id} chunks generated")
+            yield json.dumps({'done': True, 'total_chunks': chunk_id}) + '\n'
             
         except Exception as e:
-            logger.error(f"Stream error: {e}\n{traceback.format_exc()}")
-            yield json.dumps({'error': str(e)}) + '\n'
+            logger.error(f"[{request_id}] Stream error: {e}\n{traceback.format_exc()}")
+            yield json.dumps({
+                'error': str(e),
+                'error_type': 'stream_error',
+                'traceback': traceback.format_exc()
+            }) + '\n'
     
     return StreamingResponse(
         generate(),
