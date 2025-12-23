@@ -149,7 +149,7 @@ async def websocket_stream(websocket: WebSocket):
     await websocket.accept()
     
     request_id = str(uuid.uuid4())
-    speaker = "🇮🇳 👨 politician"  # Default speaker
+    speaker = "🇮🇳 👨 politician"  # Default speaker - use actual value not enum
     buffer = StreamBuffer(min_words=3, max_words=10)
     chunk_id = 0
     
@@ -169,10 +169,11 @@ async def websocket_stream(websocket: WebSocket):
                 text_chunk = item
                 logger.info(f"[{request_id}] Generating chunk {chunk_id}: {text_chunk[:50]}...")
                 
+                # Use same lookup as /tts endpoint
                 speaker_id = SPEAKER_MAP.get(speaker, {'id': None}).get('id')
                 
                 if speaker_id is None:
-                    logger.error(f"[{request_id}] Invalid speaker: {speaker}. Available: {list(SPEAKER_MAP.keys())}")
+                    logger.error(f"[{request_id}] Invalid speaker: {speaker}")
                     await output_queue.put({
                         'error': f'Invalid speaker: {speaker}',
                         'error_type': 'invalid_speaker',
@@ -303,16 +304,9 @@ async def websocket_stream(websocket: WebSocket):
                 break
             
             if 'speaker' in data:
-                new_speaker = data['speaker']
-                if new_speaker in SPEAKER_MAP:
-                    speaker = new_speaker
-                    logger.info(f"[{request_id}] Speaker changed to: {speaker}")
-                else:
-                    logger.warning(f"[{request_id}] Invalid speaker requested: {new_speaker}")
-                    await websocket.send_json({
-                        'error': f'Invalid speaker: {new_speaker}',
-                        'available_speakers': [str(s) for s in SPEAKER_MAP.keys()]
-                    })
+                # Accept speaker exactly like /tts endpoint does
+                speaker = data['speaker']
+                logger.info(f"[{request_id}] Speaker set to: {speaker}")
             
             if 'text' in data:
                 word = data['text']
