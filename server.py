@@ -168,9 +168,25 @@ async def websocket_stream(websocket: WebSocket):
                 
                 text_chunk = item
                 logger.info(f"[{request_id}] Generating chunk {chunk_id}: {text_chunk[:50]}...")
+                logger.info(f"[{request_id}] DEBUG - Speaker: '{speaker}', Type: {type(speaker)}")
                 
-                # Use same lookup as /tts endpoint - no validation, just try it
-                speaker_id = SPEAKER_MAP.get(speaker, {'id': None}).get('id')
+                # Convert speaker to enum if it's a string
+                speaker_enum = speaker
+                if isinstance(speaker, str):
+                    try:
+                        # Try to get the enum by value (display name)
+                        speaker_enum = next((s for s in Speakers if s.value == speaker), None)
+                        if speaker_enum is None:
+                            # Try direct enum lookup by name
+                            speaker_enum = Speakers[speaker] if hasattr(Speakers, speaker) else speaker
+                    except:
+                        speaker_enum = speaker
+                
+                logger.info(f"[{request_id}] DEBUG - Speaker enum: {speaker_enum}, Type: {type(speaker_enum)}")
+                
+                # Use same lookup as /tts endpoint
+                speaker_id = SPEAKER_MAP.get(speaker_enum, {'id': None}).get('id')
+                logger.info(f"[{request_id}] DEBUG - Looked up speaker_id: {speaker_id}")
                 
                 try:
                     results: AudioOutput = await tts_model.generate_async(
@@ -353,10 +369,26 @@ async def stream_tts(request: TTSRequest):
     async def generate():
         nonlocal chunk_id  # Make it accessible in nested function
         try:
-            # Use same lookup as /tts endpoint - no validation
-            speaker_id = SPEAKER_MAP.get(request.speaker, {'id': None}).get('id')
+            logger.info(f"[{request_id}] HTTP stream - Speaker: '{request.speaker}', Type: {type(request.speaker)}")
             
-            logger.info(f"[{request_id}] Starting HTTP stream, speaker: {request.speaker}, speaker_id: {speaker_id}")
+            # Convert speaker to enum if it's a string
+            speaker_enum = request.speaker
+            if isinstance(request.speaker, str):
+                try:
+                    # Try to get the enum by value (display name)
+                    speaker_enum = next((s for s in Speakers if s.value == request.speaker), None)
+                    if speaker_enum is None:
+                        # Try direct enum lookup by name
+                        speaker_enum = Speakers[request.speaker] if hasattr(Speakers, request.speaker) else request.speaker
+                except:
+                    speaker_enum = request.speaker
+            
+            logger.info(f"[{request_id}] HTTP stream - Speaker enum: {speaker_enum}")
+            
+            # Use same lookup as /tts endpoint - no validation
+            speaker_id = SPEAKER_MAP.get(speaker_enum, {'id': None}).get('id')
+            
+            logger.info(f"[{request_id}] Starting HTTP stream, speaker_id: {speaker_id}")
             
             # Split into words
             words = request.text.split()
