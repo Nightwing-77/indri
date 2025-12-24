@@ -150,7 +150,7 @@ async def websocket_stream(websocket: WebSocket):
     
     request_id = str(uuid.uuid4())
     speaker = "🇮🇳 👨 politician"  # Default speaker - use actual value not enum
-    buffer = StreamBuffer(min_words=3, max_words=10)
+    buffer = StreamBuffer(min_words=2, max_words=5)  # FAST START: audio after 2 words
     chunk_id = 0
     
     # Task queue for parallel processing
@@ -348,13 +348,21 @@ async def websocket_stream(websocket: WebSocket):
         except:
             pass
     finally:
-        # Cleanup
+        # Cleanup - MINIMAL changes to prevent server crash
         logger.info(f"[{request_id}] Cleaning up WebSocket connection")
         try:
-            await processing_queue.put(None)
-            await output_queue.put(None)
+            # Just make sure poison pills are sent
+            try:
+                processing_queue.put_nowait(None)
+            except:
+                pass
+            try:
+                output_queue.put_nowait(None)
+            except:
+                pass
         except:
             pass
+        logger.info(f"[{request_id}] Cleanup done")
 
 
 @app.post("/stream")
@@ -392,7 +400,7 @@ async def stream_tts(request: TTSRequest):
             
             # Split into words
             words = request.text.split()
-            buffer = StreamBuffer(min_words=3, max_words=10)
+            buffer = StreamBuffer(min_words=2, max_words=5)  # FAST START
             
             for word in words:
                 chunk = buffer.add_word(word)
