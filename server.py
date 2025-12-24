@@ -348,21 +348,13 @@ async def websocket_stream(websocket: WebSocket):
         except:
             pass
     finally:
-        # Cleanup - MINIMAL changes to prevent server crash
+        # Cleanup
         logger.info(f"[{request_id}] Cleaning up WebSocket connection")
         try:
-            # Just make sure poison pills are sent
-            try:
-                processing_queue.put_nowait(None)
-            except:
-                pass
-            try:
-                output_queue.put_nowait(None)
-            except:
-                pass
+            await processing_queue.put(None)
+            await output_queue.put(None)
         except:
             pass
-        logger.info(f"[{request_id}] Cleanup done")
 
 
 @app.post("/stream")
